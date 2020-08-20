@@ -32,7 +32,7 @@ impl imgui_app::Layout for HelloWorldWindow {
 fn main() {
     let mut app = App::new();
 
-    app.new_window(HelloWorldWindow {}, &|app| {
+    app.new_window(HelloWorldWindow {}, &|_app| {
         Ok(Window::build_window("Hello World", (1280, 720)))
     })
     .unwrap();
