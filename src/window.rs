@@ -26,8 +26,8 @@ pub use winit::window::WindowId;
 ///
 /// You must implement this trait in your own class and create a `NativeWindow` with an
 /// instance of that class (which is called the data model). On every update of the GUI,
-/// the App instance calls the `NativeWindow::update()` and `NativeWindow::invalidate()`
-/// method, which in turn calls `Layout::layout()`.
+/// the App instance calls the `ActiveWindow::render()` method, which in turn calls 
+/// `Layout::layout()`.
 pub trait Layout {
     /// The central method for creating the GUI.
     fn layout(&mut self, ui: LayoutContext, app: &App, window: &mut Window);
@@ -49,7 +49,7 @@ pub trait Layout {
     ///
     /// It will be called only once in the entire lifetime of the window, before the
     /// window is shown. If this method fails it can return a boxed `std::error::Error`
-    /// and both `App::new_window()` and `NativeWindow::new()` will also fail and return
+    /// and both `App::new_window()` and `Window::new()` will also fail and return
     /// the same error.
     fn init(&mut self, window: &mut Window) -> Result<(), Box<dyn Error>>;
 
@@ -68,6 +68,7 @@ pub trait Layout {
     fn before_close(&mut self, window: &mut Window) -> bool;
 }
 
+/// The amount the a window is or should be invalidated over time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InvalidateAmount {
     /// Possible continuous invalidation is stopped or inactive.
@@ -87,7 +88,7 @@ impl InvalidateAmount {
     /// `false` otherwise.
     pub fn is_continuously(&self) -> bool {
         match self {
-            Self::Stop => false,
+            Self::Stop | Self::Once => false,
             _ => true,
         }
     }
@@ -236,7 +237,7 @@ impl Window {
             .with_resizable(true)
     }
 
-    /// Creates a new NativeWindow instance.
+    /// Creates a new `Window` instance.
     ///
     /// *Only for internal use.* The user creates new windows using `App::new_window()`.
     pub fn new(
@@ -449,8 +450,8 @@ impl ActiveWindow<'_> {
             wrapped_window: this,
             imgui_context: imgui,
         } = self;
-        let this: &mut Window = this;
-        let imgui: &mut imgui::Context = imgui;
+        // let this: &mut Window = this;
+        // let imgui: &mut imgui::Context = imgui;
 
         this.winit_platform
             .handle_event(imgui.io_mut(), &this.window, evt);
@@ -480,8 +481,8 @@ impl ActiveWindow<'_> {
             wrapped_window: this,
             imgui_context: imgui,
         } = self;
-        let this: &mut Window = this;
-        let imgui: &mut imgui::Context = imgui;
+        // let this: &mut Window = this;
+        // let imgui: &mut imgui::Context = imgui;
 
         let now = std::time::Instant::now();
         imgui.io_mut().update_delta_time(now - this.last_frame_time);
@@ -551,9 +552,9 @@ impl ActiveWindow<'_> {
     }
 }
 
-/// A thread-safe handle to a NativeWindow.
+/// A thread-safe handle to a `Window`.
 ///
-/// This handle can be used to communicate with the NativeWindow from a different thread
+/// This handle can be used to communicate with the Window from a different thread
 /// through events. All methods on this handle will return an error when the window does
 /// not exist anymore (can be queried with `alive()`).
 pub struct WindowHandle {
@@ -563,7 +564,7 @@ pub struct WindowHandle {
 }
 
 impl WindowHandle {
-    /// Queries wether the represented main window still exists or not.
+    /// Queries wether the represented window still exists or not.
     pub fn alive(&self) -> bool {
         match self.alive.upgrade() {
             Some(_) => true,
@@ -573,8 +574,7 @@ impl WindowHandle {
 
     /// Runs the closure `callback` in the UI thread.
     ///
-    /// Returns an error if the NativeWindow that this handle referres to doesn't exist
-    /// anymore.
+    /// Returns an error if the `Window` this handle referres to doesn't exist anymore.
     pub fn run(&self, callback: impl FnOnce(&mut app::App, &mut Window) + 'static) -> UiResult<()> {
         if let None = self.alive.upgrade() {
             return Err(ErrorCode::WINDOW_DOES_NOT_EXIST.into());
@@ -590,14 +590,14 @@ impl WindowHandle {
     }
 
     /// Runs the closure callback in the UI thread and passes
-    /// the data model of the NativeWindow downcast to T.  
+    /// the data model of the `Window` downcast to T.  
     ///
-    /// The main thread will panic if the data model of the NativeWindow
+    /// The main thread will panic if the data model of the Window
     /// cannot be downcast to T.  
     ///
     /// ## Note
     /// There is no guarantee that the passed closure will be run.
-    /// If the NativeWindow gets destryed after this method has been called
+    /// If the Window gets destryed after this method has been called
     /// and before the main thread has gotten the event for running the closure,
     /// it will be skipped.
     pub fn run_with_data_model<T: Layout + Any>(
@@ -640,7 +640,7 @@ impl WindowHandle {
             })
     }
 
-    /// Calls `NativeWindow::data_model.log(level, message)` from the UI thread. If the
+    /// Calls `Window::data_model.log(level, message)` from the UI thread. If the
     /// window does not exist anymore (it was already destroyed) and `level` is not
     /// `None`, logs the `message` with the given `level` instead.
     pub fn log(&self, level: Option<log::Level>, message: &str) {
