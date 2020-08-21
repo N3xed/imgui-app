@@ -39,6 +39,8 @@ pub struct App {
     next_tick: std::time::Instant,
     event_loop_proxy: EventLoopProxy,
     event_loop: Option<EventLoop>,
+    /// A WGPU context used for all `Window`s.
+    pub(crate) wgpu_instance: wgpu::Instance,
     /// The amount of MSAA samples for each frame, defaults to 4.
     pub msaa_samples: u32,
     /// The font atlas shared between all windows and imgui contexts.
@@ -58,7 +60,8 @@ impl App {
             next_tick: std::time::Instant::now(),
             event_loop_proxy: event_loop.create_proxy(),
             event_loop: Some(event_loop),
-            msaa_samples: 4,
+            wgpu_instance: wgpu::Instance::new(wgpu::BackendBit::PRIMARY),
+            msaa_samples: 1,
             font_atlas: Rc::new(RefCell::new(imgui::SharedFontAtlas::create())),
             event_loop_window_target: None,
         }
@@ -183,7 +186,7 @@ impl App {
         data_model: impl Layout + 'static,
         window_builder_func: &impl Fn(&App) -> Result<winit::window::WindowBuilder, Box<dyn Error>>,
     ) -> UiResult<&'a mut Window> {
-        let wnd_builder = match window_builder_func(self) {
+        let mut wnd_builder: winit::window::WindowBuilder = match window_builder_func(self) {
             Ok(w) => w,
             Err(err) => {
                 return Err(UiError::with_boxed_source(
@@ -192,12 +195,17 @@ impl App {
                 ))
             }
         };
+
+        // Prevents the window from flickering white as much when shown initially.
+        let visible = wnd_builder.window.visible;
+        wnd_builder.window.visible = false;
+
         let wnd = match wnd_builder.build(self.event_loop()) {
             Ok(w) => w,
             Err(err) => return Err(UiError::with_source(ErrorCode::WINDOW_BUILD_FAILED, err)),
         };
 
-        let mut window: Window = Window::new(self, Box::new(data_model), wnd)?;
+        let mut window: Window = Window::new(self, Box::new(data_model), wnd, visible)?;
         let window_ptr = &mut window as *mut _;
 
         match window.data_model.init(unsafe { &mut *window_ptr }) {
@@ -224,11 +232,6 @@ impl App {
         if first_window {
             self.main_window_id = Some(id);
         }
-
-        // Immediately request invalidate.
-        let _ = window.set_invalidate_amount(super::InvalidateAmount::Until(
-            std::time::Instant::now() + std::time::Duration::from_secs(1),
-        ));
 
         Ok(entry.or_insert(window))
     }
@@ -314,11 +317,12 @@ impl App {
                 Event::RedrawRequested(window_id) => {
                     let app_ptr = &self as *const App;
                     if let Some(wnd) = self.window_mut(window_id) {
+                        let frame_delta = wnd.update_frame_time();
                         let mut active_wnd: super::ActiveWindow<'_> = match wnd.activate() {
                             Ok(w) => w,
                             Err(err) => return log::warn!("{}", err),
                         };
-                        match active_wnd.render(unsafe { &*app_ptr }) {
+                        match active_wnd.render(unsafe { &*app_ptr }, frame_delta) {
                             Err(err) => log::warn!("{}", err),
                             Ok(_) => (),
                         }
@@ -492,16 +496,16 @@ pub enum AppEvent {
 
 impl std::fmt::Debug for ExecuteCallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ExecuteCallback")
+        write!(f, "{}", std::any::type_name::<ExecuteCallback>())
     }
 }
 impl std::fmt::Debug for ExecuteWithWindowCallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ExecuteWithWindowCallback")
+        write!(f, "{}", std::any::type_name::<ExecuteWithWindowCallback>())
     }
 }
 impl std::fmt::Debug for ExecuteAtCallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ExecuteAtCallback")
+        write!(f, "{}", std::any::type_name::<ExecuteAtCallback>())
     }
 }

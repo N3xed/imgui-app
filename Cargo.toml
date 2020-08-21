@@ -6,8 +6,8 @@ edition = "2018"
 
 [dependencies]
 winit = "0.22"
-imgui-wgpu = { git = "https://github.com/N3xed/imgui-wgpu-rs" }
-wgpu = "0.5"
+imgui-wgpu = { git = "https://github.com/Aeledfyr/imgui-wgpu-rs" }
+wgpu = "0.6"
 imgui = {git = "https://github.com/N3xed/imgui-rs"}
 imgui-winit-support = "0.4"
 log = { version = "0.4", features = ["max_level_debug", "release_max_level_info", "std"] }

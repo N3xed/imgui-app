@@ -14,6 +14,7 @@ pub enum ErrorCode {
     EVENT_LOOP_CLOSED,
     /// No graphics adapter available from `wgpu`.
     GRAPHICS_ADAPTER_NOT_AVAILABLE,
+    REQUEST_GRAPHICS_DEVICE_FAILED,
     /// Failed to load the font.
     FONT_LOAD_FAILED,
     /// Timeout when requesting the next swap chain texture with `wgpu::SwapChain::get_next_texture()`.

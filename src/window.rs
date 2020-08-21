@@ -5,7 +5,7 @@
 //! responsible for the GUI layout (`Layout::layout()`).
 //!
 //! Manipulation of all GUI related things can only be done in the main thread. This is
-//! possible by sending events either with a `ui::AppHandle` or `WindowHandle`.
+//! possible by sending events either with a `app::AppHandle` or `WindowHandle`.
 
 use super::app::{self, App};
 use super::ErrorCode;
@@ -24,16 +24,16 @@ pub use winit::window::WindowId;
 
 /// This trait contains the functions which are used to layout the GUI.
 ///
-/// You must implement this trait in your own class and create a `NativeWindow` with an
-/// instance of that class (which is called the data model). On every update of the GUI,
-/// the App instance calls the `ActiveWindow::render()` method, which in turn calls 
+/// You must implement this trait in your own class and create a `Window` with an instance
+/// of that class (which is called the data model). On every redraw of the GUI, the App
+/// instance calls the `ActiveWindow::render()` method, which in turn calls
 /// `Layout::layout()`.
 pub trait Layout {
     /// The central method for creating the GUI.
     fn layout(&mut self, ui: LayoutContext, app: &App, window: &mut Window);
 
-    /// A user define logging method, which can be called from a thread-safe handle of the
-    /// window.
+    /// A user defined logging method, which can be called from a thread-safe handle of
+    /// the window.
     ///
     /// If `level` is `None`, the `message` is only displayed in the GUI and not logged.
     fn log(&mut self, level: Option<log::Level>, message: &str);
@@ -41,8 +41,8 @@ pub trait Layout {
     /// Used for downcasting to the actual data model type.
     ///
     /// When manipulating the data model from a different thread using
-    /// `NativeWindowHandle::run_with_data_model()`, this allows the cast from the
-    /// `Layout` trait reference to the actual data model type.
+    /// `WindowHandle::run_with_data_model()`, this allows the cast from the `Layout`
+    /// trait reference to the actual data model type.
     fn as_any(&mut self) -> &mut dyn Any;
 
     /// This method is used to initialize the data model.
@@ -172,6 +172,8 @@ pub struct Window {
     swap_chain: wgpu::SwapChain,
     renderer: imgui_wgpu::Renderer,
     queue: wgpu::Queue,
+    /// A MSAA framebuffer texture and its sample count.
+    msaa_framebuffer: Option<(wgpu::TextureView, wgpu::Extent3d, u32)>,
 
     // All imgui related
     winit_platform: imgui_winit_support::WinitPlatform,
@@ -224,6 +226,15 @@ impl Window {
         self.last_frame_time
     }
 
+    /// Updates the frame time to now and returns the duration since the last frame.
+    #[inline]
+    pub(crate) fn update_frame_time(&mut self) -> std::time::Duration {
+        let now = std::time::Instant::now();
+        let frame_delta = now - self.last_frame_time;
+        self.last_frame_time = now;
+        frame_delta
+    }
+
     /// Creates a standard top level window.  
     ///
     /// Call this method inside the closure passed to `App::new_window()`.
@@ -244,9 +255,10 @@ impl Window {
         app: &mut app::App,
         data_model: Box<dyn Layout>,
         wnd: winit::window::Window,
+        visible: bool,
     ) -> UiResult<Window> {
         let size = wnd.inner_size();
-        let surface = wgpu::Surface::create(&wnd);
+        let surface = unsafe { app.wgpu_instance.create_surface(&wnd) };
 
         // select adapter and gpu device
         let (device, queue) = Window::select_gpu_device(&app, &surface)?;
@@ -261,6 +273,15 @@ impl Window {
             present_mode: wgpu::PresentMode::Fifo,
         };
         let swap_chain = device.create_swap_chain(&surface, &swap_chain_desc);
+        let msaa_framebuffer = if app.msaa_samples > 1 {
+            Some(Window::create_msaa_framebuffer(
+                &device,
+                &swap_chain_desc,
+                app.msaa_samples,
+            ))
+        } else {
+            None
+        };
 
         // create imgui ui
         // Note: This is going to panic if any other `imgui::Context` is currently active
@@ -279,12 +300,12 @@ impl Window {
             &mut imgui,
             &device,
             &queue,
-            &swap_chain_desc,
-            Some(wgpu::Color::BLACK),
+            swap_chain_desc.format,
+            None,
             app.msaa_samples,
         );
 
-        Ok(Window {
+        let mut wnd = Window {
             window: wnd,
             last_frame_time: std::time::Instant::now(),
             alive: Arc::default(),
@@ -297,6 +318,7 @@ impl Window {
             swap_chain,
             renderer,
             queue,
+            msaa_framebuffer,
 
             winit_platform: platform,
             imgui: ImguiContext::Suspended(imgui.suspend()),
@@ -304,7 +326,17 @@ impl Window {
             last_cursor: None,
 
             data_model,
-        })
+        };
+
+        if visible {
+            // draw immediately
+            let mut active_window = wnd.activate()?;
+            active_window.render(app, std::time::Duration::from_millis(std::u64::MAX))?;
+            drop(active_window);
+            wnd.window().set_visible(true);
+        }
+
+        Ok(wnd)
     }
 
     pub fn invalidate_amount(&self) -> InvalidateAmount {
@@ -330,6 +362,11 @@ impl Window {
         self.swap_chain = self
             .gpu_device
             .create_swap_chain(&self.surface, &self.swap_chain_desc);
+
+        // Note: Normally we would also update the optional MSAA framebuffer here, but
+        // this causes visual resize lag, presumably because the recreation of the MSAA
+        // texture is quite expensive. Instead this is done in the
+        // `ActiveWindow::render()` method.
     }
 
     pub(super) fn activate<'a>(&'a mut self) -> UiResult<ActiveWindow<'a>> {
@@ -371,7 +408,7 @@ impl Window {
     }
 
     fn select_gpu_device(
-        _app: &App,
+        app: &App,
         surface: &wgpu::Surface,
     ) -> UiResult<(wgpu::Device, wgpu::Queue)> {
         use futures::executor::block_on;
@@ -380,32 +417,72 @@ impl Window {
             power_preference: wgpu::PowerPreference::Default,
             compatible_surface: Some(&surface),
         };
-
-        let adapter_request = wgpu::Adapter::request(&adapter_opts, wgpu::BackendBit::PRIMARY);
-        let adapter: wgpu::Adapter = match block_on(adapter_request) {
+        let adapter_request = app.wgpu_instance.request_adapter(&adapter_opts);
+        let adapter = match block_on(adapter_request) {
             Some(val) => val,
-            None => {
-                log::debug!("Failed to get a PRIMARY graphics adapter, retrying with SECONDARY.");
+            None => return Err(ErrorCode::GRAPHICS_ADAPTER_NOT_AVAILABLE.into()),
+        };
 
-                let adapter_request =
-                    wgpu::Adapter::request(&adapter_opts, wgpu::BackendBit::SECONDARY);
-                match block_on(adapter_request) {
-                    Some(val) => val,
-                    None => {
-                        log::debug!("Failed to request graphics adapter.");
-                        return Err(ErrorCode::GRAPHICS_ADAPTER_NOT_AVAILABLE.into());
-                    }
-                }
+        let device_desc = wgpu::DeviceDescriptor {
+            features: wgpu::Features::default(),
+            limits: wgpu::Limits::default(),
+            shader_validation: false,
+        };
+
+        let device_request =
+            adapter.request_device(&device_desc, Some(std::path::Path::new(file!())));
+        let device_and_queue = match block_on(device_request) {
+            Ok(device) => device,
+            Err(err) => {
+                return Err(UiError::with_source(
+                    ErrorCode::REQUEST_GRAPHICS_DEVICE_FAILED,
+                    err,
+                ))
             }
         };
 
-        let extensions = wgpu::Extensions {
-            anisotropic_filtering: false,
-        };
-        let limits = wgpu::Limits::default();
-        let device_desc = wgpu::DeviceDescriptor { extensions, limits };
+        Ok(device_and_queue)
+    }
 
-        Ok(block_on(adapter.request_device(&device_desc)))
+    /// Creates new framebuffer for multisampling anti-aliasing with the specified
+    /// `sample_count`.  
+    /// Returnes a tuple with the `wgpu::TextureView` and the MSAA sample count used.
+    fn create_msaa_framebuffer(
+        device: &wgpu::Device,
+        sc_desc: &wgpu::SwapChainDescriptor,
+        sample_count: u32,
+    ) -> (wgpu::TextureView, wgpu::Extent3d, u32) {
+        let tex_extent = wgpu::Extent3d {
+            width: sc_desc.width,
+            height: sc_desc.height,
+            depth: 1,
+        };
+        let tex_desc = &wgpu::TextureDescriptor {
+            label: Some("imgui_msaa_texture"),
+            size: tex_extent,
+            mip_level_count: 1,
+            sample_count: sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format: sc_desc.format,
+            usage: wgpu::TextureUsage::OUTPUT_ATTACHMENT,
+        };
+
+        let tex_view_desc = &wgpu::TextureViewDescriptor {
+            label: Some("imgui_msaa_texture_view"),
+            format: Some(sc_desc.format),
+            dimension: None,
+            aspect: wgpu::TextureAspect::All,
+            base_mip_level: 0,
+            level_count: None,
+            base_array_layer: 0,
+            array_layer_count: None,
+        };
+
+        (
+            device.create_texture(tex_desc).create_view(&tex_view_desc),
+            tex_extent,
+            sample_count,
+        )
     }
 }
 
@@ -476,7 +553,7 @@ impl ActiveWindow<'_> {
         }
     }
 
-    pub fn render(&mut self, app: &App) -> UiResult<()> {
+    pub fn render(&mut self, app: &App, delta_time: std::time::Duration) -> UiResult<()> {
         let ActiveWindow {
             wrapped_window: this,
             imgui_context: imgui,
@@ -484,14 +561,7 @@ impl ActiveWindow<'_> {
         // let this: &mut Window = this;
         // let imgui: &mut imgui::Context = imgui;
 
-        let now = std::time::Instant::now();
-        imgui.io_mut().update_delta_time(now - this.last_frame_time);
-        this.last_frame_time = now;
-
-        let framebuffer = match this.swap_chain.get_next_texture() {
-            Ok(val) => val,
-            Err(_) => return Err(UiError::new(ErrorCode::SWAP_CHAIN_TIMEOUT)),
-        };
+        imgui.io_mut().update_delta_time(delta_time);
 
         this.winit_platform
             .prepare_frame(imgui.io_mut(), &this.window)
@@ -523,20 +593,64 @@ impl ActiveWindow<'_> {
             this.last_cursor = ui.mouse_cursor();
             this.winit_platform.prepare_render(&ui, &this.window);
         }
-        let draw_data = ui.render();
+        let draw_data: &imgui::DrawData = ui.render();
+
+        if draw_data.draw_lists_count() == 0 {
+            log::debug!("Imgui draw data is empty!");
+            return Ok(());
+        }
+
+        let frame: wgpu::SwapChainFrame = match this.swap_chain.get_current_frame() {
+            Ok(val) => val,
+            Err(_) => return Err(UiError::new(ErrorCode::SWAP_CHAIN_TIMEOUT)),
+        };
 
         let cmd_encoder_desc = wgpu::CommandEncoderDescriptor {
             label: Some("imgui_command_encoder"),
         };
-        let mut encoder = this.gpu_device.create_command_encoder(&cmd_encoder_desc);
+        let mut encoder: wgpu::CommandEncoder =
+            this.gpu_device.create_command_encoder(&cmd_encoder_desc);
 
-        match this.renderer.render(
-            draw_data,
-            &this.gpu_device,
-            &mut encoder,
-            &framebuffer.view,
-            &this.swap_chain_desc,
-        ) {
+        // If we have a msaa framebuffer, use it.
+        let (attachment, resolve_target) =
+            if let Some((ref msaa_framebuffer, size, _)) = this.msaa_framebuffer {
+                // Recreate the msaa_framebuffer if its size doesn't match.
+                if size.width == this.swap_chain_desc.width
+                    && size.height == this.swap_chain_desc.height
+                {
+                    (msaa_framebuffer, Some(&frame.output.view))
+                } else {
+                    this.msaa_framebuffer = Some(Window::create_msaa_framebuffer(
+                        &this.gpu_device,
+                        &this.swap_chain_desc,
+                        app.msaa_samples,
+                    ));
+
+                    (
+                        &this.msaa_framebuffer.as_ref().unwrap().0,
+                        Some(&frame.output.view),
+                    )
+                }
+            } else {
+                (&frame.output.view, None)
+            };
+
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[wgpu::RenderPassColorAttachmentDescriptor {
+                attachment,
+                resolve_target,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: true,
+                },
+            }],
+            depth_stencil_attachment: None,
+        });
+
+        match this
+            .renderer
+            .render(&draw_data, &this.queue, &this.gpu_device, &mut render_pass)
+        {
             Err(err) => {
                 return Err(UiError::with_source(
                     ErrorCode::RENDER_ERROR,
@@ -546,7 +660,8 @@ impl ActiveWindow<'_> {
             Ok(_) => (),
         };
 
-        this.queue.submit(&[encoder.finish()]);
+        drop(render_pass);
+        this.queue.submit(Some(encoder.finish()));
 
         Ok(())
     }
