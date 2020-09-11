@@ -6,12 +6,12 @@ edition = "2018"
 
 [dependencies]
 winit = "0.22"
-imgui-wgpu = { git = "https://github.com/Aeledfyr/imgui-wgpu-rs" }
+imgui-wgpu = { git = "https://github.com/N3xed/imgui-wgpu-rs", branch = "better-texture-support" }
 wgpu = "0.6"
-imgui = {git = "https://github.com/N3xed/imgui-rs"}
+imgui = { git = "https://github.com/Gekkio/imgui-rs.git" }
 imgui-winit-support = "0.4"
-log = { version = "0.4", features = ["max_level_debug", "release_max_level_info", "std"] }
+log = "0.4"
 futures = "0.3"
 
 [patch.crates-io]
-imgui = {git = "https://github.com/N3xed/imgui-rs"}
+imgui = { git = "https://github.com/Gekkio/imgui-rs.git" }

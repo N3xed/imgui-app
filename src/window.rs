@@ -484,6 +484,31 @@ impl Window {
             sample_count,
         )
     }
+
+    /// Gets the `wgpu::Queue` of this window.
+    pub fn wgpu_queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
+    /// Gets the `wgpu::Device` of this window.
+    pub fn wgpu_device(&self) -> &wgpu::Device {
+        &self.gpu_device
+    }
+
+    /// Gets the renderer.
+    pub fn renderer(&self) -> &imgui_wgpu::Renderer {
+        &self.renderer
+    }
+
+    /// Gets a reference to the texture collection.
+    pub fn textures(&self) -> &imgui::Textures<imgui_wgpu::Texture> {
+        &self.renderer.textures
+    }
+
+    /// Gets a mutable reference to the texture collection.
+    pub fn textures_mut(&mut self) -> &mut imgui::Textures<imgui_wgpu::Texture> {
+        &mut self.renderer.textures
+    }
 }
 
 /// A window prepared to be updated.
@@ -690,7 +715,10 @@ impl WindowHandle {
     /// Runs the closure `callback` in the UI thread.
     ///
     /// Returns an error if the `Window` this handle referres to doesn't exist anymore.
-    pub fn run(&self, callback: impl FnOnce(&mut app::App, &mut Window) + 'static) -> UiResult<()> {
+    pub fn run(
+        &self,
+        callback: impl FnOnce(&mut app::App, &mut Window) + 'static + Send,
+    ) -> UiResult<()> {
         if let None = self.alive.upgrade() {
             return Err(ErrorCode::WINDOW_DOES_NOT_EXIST.into());
         }
@@ -717,7 +745,7 @@ impl WindowHandle {
     /// it will be skipped.
     pub fn run_with_data_model<T: Layout + Any>(
         &self,
-        callback: impl FnOnce(&mut app::App, &mut T, WindowHandle) + 'static,
+        callback: impl FnOnce(&mut app::App, &mut T, &mut Window) + 'static + Send,
     ) -> UiResult<()> {
         if let None = self.alive.upgrade() {
             return Err(ErrorCode::WINDOW_DOES_NOT_EXIST.into());
@@ -727,9 +755,9 @@ impl WindowHandle {
             .send_event(app::AppEvent::ExecuteWithWindow {
                 window_id: self.window_id,
                 callback: app::ExecuteWithWindowCallback(Box::new(move |app, wnd: &mut Window| {
-                    let handle = wnd.handle();
+                    let wnd_ptr = wnd as *mut _;
                     let data_model = wnd.data_model.as_any().downcast_mut::<T>().unwrap();
-                    callback(app, data_model, handle);
+                    callback(app, data_model, unsafe { &mut *wnd_ptr });
                 })),
             })
             .unwrap();

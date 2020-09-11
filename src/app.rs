@@ -409,6 +409,7 @@ impl App {
 pub struct AppHandle {
     event_loop_proxy: EventLoopProxy,
 }
+// unsafe impl core::marker::Send for AppHandle {}
 
 impl AppHandle {
     /// Sends a custom event to the event loop in the UI thread.
@@ -423,7 +424,7 @@ impl AppHandle {
     }
 
     /// Executes the closure `callback` in the UI thread with a mutable reference to `App`.
-    pub fn execute_with_gui(&self, callback: impl FnOnce(&mut App) + 'static) -> UiResult<()> {
+    pub fn execute_with_gui(&self, callback: impl FnOnce(&mut App) + 'static + Send) -> UiResult<()> {
         self.send_event(AppEvent::Execute {
             callback: ExecuteCallback(Box::new(callback)),
         })
@@ -446,13 +447,13 @@ impl AppHandle {
 /// It returnes an optional `Instant` that specifies at what time this callback should be
 /// called again. If `None` is returned, the callback is only called once and then
 /// discarded.
-pub struct ExecuteAtCallback(pub Box<dyn FnMut(AppHandle) -> Option<std::time::Instant>>);
+pub struct ExecuteAtCallback(pub Box<dyn FnMut(AppHandle) -> Option<std::time::Instant> + Send>);
 
 /// A callback that receives an `App` reference to be executed in the UI thread.
-pub struct ExecuteCallback(pub Box<dyn FnOnce(&mut App)>);
+pub struct ExecuteCallback(pub Box<dyn FnOnce(&mut App) + Send>);
 
 /// A callback that receives an `App` and `Window` reference to be executed in the UI thread.
-pub struct ExecuteWithWindowCallback(pub Box<dyn FnOnce(&mut App, &mut Window)>);
+pub struct ExecuteWithWindowCallback(pub Box<dyn FnOnce(&mut App, &mut Window) + Send>);
 
 /// An enum that represents multiple app or window specific events.
 #[derive(Debug)]
