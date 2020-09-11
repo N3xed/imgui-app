@@ -251,7 +251,7 @@ impl Window {
     /// Creates a new `Window` instance.
     ///
     /// *Only for internal use.* The user creates new windows using `App::new_window()`.
-    pub fn new(
+    pub(crate) fn new(
         app: &mut app::App,
         data_model: Box<dyn Layout>,
         wnd: winit::window::Window,
